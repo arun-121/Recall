@@ -1,0 +1,15 @@
+# Swift Package Manager
+.build/
+Core/.build/
+Tools/EmbeddingVisualizer/.build/
+.swiftpm/
+Package.resolved
+
+# Built app bundle
+dist/
+
+# Generated embedding visualization
+embeddings.html
+
+# macOS
+.DS_Store

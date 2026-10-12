@@ -132,6 +132,23 @@ import Foundation
         #expect(results.isEmpty)
     }
 
+    @Test func irrelevantQueryReturnsNoResults() async throws {
+        // Regression: with a single indexed document, an unrelated query must NOT
+        // surface it just because it is the nearest (and only) vector. The
+        // semantic relevance floor + absence of keyword/filename hits => empty.
+        let dir = try TempDir()
+        _ = try dir.writeFile("resume.txt", contents: "Experienced software engineer skilled in Python, distributed systems and cloud infrastructure. Led backend teams building scalable APIs.")
+        let repo = try SQLiteDocumentRepository(path: ":memory:")
+        let embedder = FakeEmbeddingProvider(dimensions: 128)
+        let indexer = DocumentIndexer(repository: repo, embedder: embedder)
+        try await indexer.index(folders: [dir.url])
+
+        // High threshold so the fake provider's low off-topic similarity is rejected.
+        let search = HybridSearchService(repository: repo, embedder: embedder, minSemanticSimilarity: 0.5)
+        let results = try await search.search(query: "umbrella", limit: 10)
+        #expect(results.isEmpty)
+    }
+
     @Test func embeddingFailureSurfacesWhenNoKeywordResults() async throws {
         let repo = try SQLiteDocumentRepository(path: ":memory:")
         let embedder = FakeEmbeddingProvider(shouldFail: true)
@@ -139,5 +156,39 @@ import Foundation
         await #expect(throws: EmbeddingError.self) {
             _ = try await search.search(query: "anything", limit: 10)
         }
+    }
+
+    @Test func excludedDirectoriesAreNotIndexed() async throws {
+        let dir = try TempDir()
+        _ = try dir.writeFile("keep.md", contents: "real user document content")
+        // Create a node_modules subdir with a file that must be ignored.
+        let nm = dir.url.appendingPathComponent("node_modules/pkg")
+        try FileManager.default.createDirectory(at: nm, withIntermediateDirectories: true)
+        try "dependency readme that should be skipped".data(using: .utf8)!
+            .write(to: nm.appendingPathComponent("README.md"))
+
+        let repo = try SQLiteDocumentRepository(path: ":memory:")
+        let embedder = FakeEmbeddingProvider()
+        let indexer = DocumentIndexer(repository: repo, embedder: embedder)
+        try await indexer.index(folders: [dir.url])
+
+        let docs = try repo.allDocuments()
+        #expect(docs.count == 1)
+        #expect(docs.first?.filename == "keep.md")
+    }
+
+    @Test func indexesMoreFilesThanConcurrencyWindow() async throws {
+        // Regression test for a sliding-window bug that spun forever. With more
+        // files than maxConcurrentTasks, indexing must still complete.
+        let dir = try TempDir()
+        for i in 0..<12 {
+            _ = try dir.writeFile("doc\(i).txt", contents: "unique content number \(i) about topic \(i)")
+        }
+        let repo = try SQLiteDocumentRepository(path: ":memory:")
+        let embedder = FakeEmbeddingProvider()
+        let indexer = DocumentIndexer(repository: repo, embedder: embedder, maxConcurrentTasks: 3)
+        try await indexer.index(folders: [dir.url])
+        #expect(try repo.allDocuments().count == 12)
+        #expect(try repo.allDocuments().allSatisfy { $0.indexStatus == .indexed })
     }
 }

@@ -13,6 +13,11 @@ public final class HybridSearchService: SearchService, @unchecked Sendable {
     private let embedder: EmbeddingProvider
     private let semanticCandidateLimit: Int
     private let keywordCandidateLimit: Int
+    /// Minimum cosine similarity for a chunk to count as a semantic match.
+    /// Below this, the chunk is considered unrelated and is discarded, so an
+    /// off-topic query (e.g. "umbrella" against a resume) returns no results
+    /// instead of surfacing the nearest-but-irrelevant document.
+    private let minSemanticSimilarity: Double
     private let fileManager: FileManager
 
     public init(
@@ -20,12 +25,14 @@ public final class HybridSearchService: SearchService, @unchecked Sendable {
         embedder: EmbeddingProvider,
         semanticCandidateLimit: Int = 50,
         keywordCandidateLimit: Int = 50,
+        minSemanticSimilarity: Double = 0.5,
         fileManager: FileManager = .default
     ) {
         self.repository = repository
         self.embedder = embedder
         self.semanticCandidateLimit = semanticCandidateLimit
         self.keywordCandidateLimit = keywordCandidateLimit
+        self.minSemanticSimilarity = minSemanticSimilarity
         self.fileManager = fileManager
     }
 
@@ -102,7 +109,11 @@ public final class HybridSearchService: SearchService, @unchecked Sendable {
             return m
         }
         scored.sort { $0.score > $1.score }
-        return Array(scored.prefix(semanticCandidateLimit))
+        // Discard chunks that are not similar enough to be considered relevant.
+        // This prevents an off-topic query from matching the nearest-but-unrelated
+        // document just because it is the closest vector available.
+        let relevant = scored.filter { $0.score >= minSemanticSimilarity }
+        return Array(relevant.prefix(semanticCandidateLimit))
     }
 
     private func filenameCandidates(for query: String) throws -> [ScoredChunk] {

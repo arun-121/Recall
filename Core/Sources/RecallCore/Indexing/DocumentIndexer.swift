@@ -68,6 +68,15 @@ public actor DocumentIndexer {
     }
 
     /// Recursively discovers supported files under the given folders.
+    /// Directory names that are never indexed. These hold dependencies, build
+    /// output, or VCS metadata — not user documents — and would otherwise bloat
+    /// the index with thousands of irrelevant files (e.g. node_modules READMEs).
+    public static let excludedDirectoryNames: Set<String> = [
+        "node_modules", ".git", ".svn", ".hg", ".build", "build", "dist",
+        "DerivedData", ".venv", "venv", "__pycache__", ".next", ".nuxt",
+        "target", "Pods", "Carthage", ".gradle", ".idea", ".cache"
+    ]
+
     public func discoverFiles(in folders: [URL]) -> [URL] {
         var found: [URL] = []
         for folder in folders {
@@ -82,6 +91,14 @@ public actor DocumentIndexer {
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
             ) else { continue }
             for case let url as URL in enumerator {
+                // Skip (and don't descend into) excluded directories.
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                if isDir {
+                    if Self.excludedDirectoryNames.contains(url.lastPathComponent) {
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
                 let ext = url.pathExtension
                 if FileType.from(pathExtension: ext) != nil {
                     found.append(url.resolvingSymlinksInPath())
@@ -105,10 +122,13 @@ public actor DocumentIndexer {
         // folders but no longer exist on disk.
         try reconcileDeletions(folders: folders, discovered: Set(files.map { $0.path }))
 
-        // Bounded concurrency via a simple sliding window of child tasks.
+        // Bounded concurrency via a sliding window of child tasks. `addNext`
+        // itself updates `active`, so callers must NOT also adjust it (an earlier
+        // double-increment here caused the loop to spin forever).
         var iterator = files.makeIterator()
         try await withThrowingTaskGroup(of: Void.self) { group in
             var active = 0
+            @discardableResult
             func addNext() -> Bool {
                 guard let url = iterator.next() else { return false }
                 group.addTask { [weak self] in
@@ -119,12 +139,14 @@ public actor DocumentIndexer {
                 active += 1
                 return true
             }
+            // Prime the window.
             for _ in 0..<maxConcurrentTasks { if !addNext() { break } }
+            // Each time a task completes, start at most one more.
             while active > 0 {
                 try await group.next()
                 active -= 1
                 if Task.isCancelled { break }
-                _ = addNext() ? (active += 1) : ()
+                addNext()
             }
             if Task.isCancelled {
                 group.cancelAll()

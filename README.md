@@ -179,12 +179,23 @@ For a query, `HybridSearchService`:
 2. Generates a query embedding (via `EmbeddingProvider`).
 3. Retrieves nearest chunk vectors by **exact cosine similarity** over all stored
    vectors (chosen deliberately — see below).
+3. Retrieves nearest chunk vectors by **exact cosine similarity**, keeping only
+   those at or above a **minimum similarity floor** (default `0.5`) — see below.
 4. Retrieves keyword matches via **SQLite FTS5** (`bm25`).
 5. Adds a lightweight **filename** matching signal.
 6. Fuses the three ranked lists with **Reciprocal Rank Fusion** (semantic weighted
    1.0, keyword 0.9, filename 0.5).
 7. Groups chunk hits by document (summing contributions, keeping the best chunk as
    the snippet) and returns document-level results.
+
+**Why a relevance floor?** Semantic (vector) search always returns the *nearest*
+chunks, even when nothing is actually relevant — so without a floor, an off-topic
+query like *"umbrella"* against a resume would still surface the resume simply
+because it is the closest (or only) vector. The floor discards chunks whose cosine
+similarity is below `minSemanticSimilarity`. Measured on `nomic-embed-text`,
+off-topic queries score ~0.33–0.47 against unrelated text while genuine matches
+score ~0.65+, so `0.5` cleanly separates them. A query with no semantic match above
+the floor and no keyword/filename hit correctly returns **no results**.
 
 **Why RRF?** Cosine similarity (roughly −1…1) and FTS5 `bm25` scores live on
 different, incomparable scales. Naively adding them is meaningless. RRF fuses
